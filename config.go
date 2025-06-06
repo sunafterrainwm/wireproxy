@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -183,7 +184,7 @@ func parseCIDRNetIP(section *ini.Section, keyName string) ([]netip.Addr, error) 
 			if err != nil {
 				return nil, err
 			}
-      
+    
 			addr := prefix.Addr()
 			ips = append(ips, addr)
 		}
@@ -463,7 +464,16 @@ func ParseConfig(path string) (*Configuration, error) {
 		AllowNonUniqueSections: true,
 	}
 
-	cfg, err := ini.LoadSources(iniOpt, path)
+	var cfg *ini.File
+	var err error
+
+	if path == "-" {
+		cfg, err = ini.LoadSources(iniOpt, os.Stdin)
+		fmt.Print("Note: Load config from stdin\n")
+	} else {
+		cfg, err = ini.LoadSources(iniOpt, path)
+	}
+
 	if err != nil {
 		return nil, err
 	}
