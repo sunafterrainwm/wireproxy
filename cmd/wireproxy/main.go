@@ -3,15 +3,17 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/landlock-lsm/go-landlock/landlock"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"runtime"
 	"strconv"
 	"syscall"
+
+	"github.com/landlock-lsm/go-landlock/landlock"
 
 	"github.com/akamensky/argparse"
 	"github.com/pufferffish/wireproxy"
@@ -23,9 +25,9 @@ import (
 const daemonProcess = "daemon-process"
 
 // default paths for wireproxy config file
-var default_config_paths = []string {
-    "/etc/wireproxy/wireproxy.conf",
-    os.Getenv("HOME")+"/.config/wireproxy.conf",
+var default_config_paths = []string{
+	"/etc/wireproxy/wireproxy.conf",
+	os.Getenv("HOME") + "/.config/wireproxy.conf",
 }
 
 var version = "1.0.8-dev"
@@ -59,12 +61,21 @@ func executablePath() string {
 
 // check if default config file paths exist
 func configFilePath() (string, bool) {
-    for _, path := range default_config_paths {
-        if _, err := os.Stat(path); err == nil {
-            return path, true
-        }
-    }
-    return "", false
+	for _, path := range default_config_paths {
+		if _, err := os.Stat(path); err == nil {
+			return path, true
+		}
+	}
+	return "", false
+}
+
+func restrictPathsOrPanic(rules ...landlock.Rule) {
+	if runtime.GOOS == "android" {
+		// Most of android didn't enable landlock
+		return
+	}
+
+	panicIfError(landlock.V1.BestEffort().RestrictPaths(rules...))
 }
 
 func lock(stage string) {
@@ -78,9 +89,9 @@ func lock(stage string) {
 		// also remove unveil permission to lock unveil
 		pledgeOrPanic("stdio rpath inet dns proc exec")
 		// Linux
-		panicIfError(landlock.V1.BestEffort().RestrictPaths(
+		restrictPathsOrPanic(
 			landlock.RODirs("/"),
-		))
+		)
 	case "boot-daemon":
 	case "read-config":
 		// OpenBSD
@@ -91,7 +102,7 @@ func lock(stage string) {
 		pledgeOrPanic("stdio inet dns")
 		// Linux
 		net.DefaultResolver.PreferGo = true // needed to lock down dependencies
-		panicIfError(landlock.V1.BestEffort().RestrictPaths(
+		restrictPathsOrPanic(
 			landlock.ROFiles("/etc/resolv.conf").IgnoreIfMissing(),
 			landlock.ROFiles("/dev/fd").IgnoreIfMissing(),
 			landlock.ROFiles("/dev/zero").IgnoreIfMissing(),
@@ -110,7 +121,7 @@ func lock(stage string) {
 			landlock.RWFiles("/dev/null").IgnoreIfMissing(),
 			landlock.RWFiles("/dev/full").IgnoreIfMissing(),
 			landlock.RWFiles("/proc/self/fd").IgnoreIfMissing(),
-		))
+		)
 	default:
 		panic("invalid stage")
 	}
@@ -140,12 +151,16 @@ func lockNetwork(sections []wireproxy.RoutineSpawner, infoAddr *string) {
 		switch section := section.(type) {
 		case *wireproxy.TCPServerTunnelConfig:
 			rules = append(rules, landlock.ConnectTCP(extractPort(section.Target)))
+			fmt.Printf("Note: Forward tcp connect to tcp://%s\n", section.Target)
 		case *wireproxy.HTTPConfig:
 			rules = append(rules, landlock.BindTCP(extractPort(section.BindAddress)))
+			fmt.Printf("Note: Listen http server http://%s\n", section.BindAddress)
 		case *wireproxy.TCPClientTunnelConfig:
 			rules = append(rules, landlock.ConnectTCP(uint16(section.BindAddress.Port)))
+			fmt.Printf("Note: Listen tcp server tcp://%s\n", section.BindAddress)
 		case *wireproxy.Socks5Config:
 			rules = append(rules, landlock.BindTCP(extractPort(section.BindAddress)))
+			fmt.Printf("Note: Listen socks5 server socks5://%s, socks5h://%s\n", section.BindAddress, section.BindAddress)
 		}
 	}
 
@@ -193,12 +208,12 @@ func main() {
 	}
 
 	if *config == "" {
-        if path, config_exist := configFilePath(); config_exist {
-            *config = path
-        } else {
-            fmt.Println("configuration path is required")
-            return
-        }
+		if path, config_exist := configFilePath(); config_exist {
+			*config = path
+		} else {
+			fmt.Println("configuration path is required")
+			return
+		}
 	}
 
 	if !*daemon {
